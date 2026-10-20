@@ -42,10 +42,30 @@ const getChaptersByStudentId = async ({ studentId }) => {
     }
   }
 
-  // Calculate sequential unlock/lock state
-  let allPreviousPassed = true;
-  const enriched = chapters.map((ch, idx) => {
+  // Deduplicate in memory by chapterNo (keep the best record if duplicate exists)
+  const map = new Map();
+  for (const ch of chapters) {
     const item = ch.toObject ? ch.toObject() : { ...ch };
+    const num = Number(item.chapterNo);
+    if (!map.has(num)) {
+      map.set(num, item);
+    } else {
+      const existing = map.get(num);
+      const isExistingPassed = existing.status === 'PASSED' || (Number(existing.percentage) >= 0.8);
+      const isCurrentPassed = item.status === 'PASSED' || (Number(item.percentage) >= 0.8);
+      if (!isExistingPassed && isCurrentPassed) {
+        map.set(num, item);
+      } else if (Number(item.percentage) > Number(existing.percentage)) {
+        map.set(num, item);
+      }
+    }
+  }
+
+  const uniqueChapters = Array.from(map.values()).sort((a, b) => Number(a.chapterNo) - Number(b.chapterNo));
+
+  // Calculate sequential unlock/lock state on deduplicated 35 chapters
+  let allPreviousPassed = true;
+  const enriched = uniqueChapters.map((item, idx) => {
     const isPassed = item.status === 'PASSED' || (Number(item.percentage) >= 0.8);
 
     if (idx === 0) {
@@ -91,27 +111,36 @@ const getChapterByStudentIdAndChapterId = async ({ studentId, chapterNo }) => {
 };
 
 const makeChaptersData = async ({ studentId, studentName }) => {
-  const existing = await StudentModuleResult.find({ studentId });
-  if (existing && existing.length >= 35) return existing;
-
   const total = Math.min(35, chaptersData.length);
+  const operations = [];
+
   for (let i = 0; i < total; i++) {
     const chapterNo = chaptersData[i].customIndex || (i + 1);
-    const existingChapter = await StudentModuleResult.findOne({ studentId, chapterNo });
-    if (!existingChapter) {
-      await StudentModuleResult.create({
-        studentName: studentName,
-        studentId: studentId,
-        chapterNo: chapterNo,
-        chapterName: chaptersData[i].name,
-        videoPlayed: 0,
-        percentage: 0,
-        marks: 0,
-        attempted: false,
-        status: 'NOT_ATTEMPTED',
-      });
-    }
+    operations.push({
+      updateOne: {
+        filter: { studentId, chapterNo },
+        update: {
+          $setOnInsert: {
+            studentName: studentName,
+            studentId: studentId,
+            chapterNo: chapterNo,
+            chapterName: chaptersData[i].name,
+            videoPlayed: 0,
+            percentage: 0,
+            marks: 0,
+            attempted: false,
+            status: 'NOT_ATTEMPTED',
+          },
+        },
+        upsert: true,
+      },
+    });
   }
+
+  if (operations.length > 0) {
+    await StudentModuleResult.bulkWrite(operations, { ordered: false }).catch(() => {});
+  }
+
   return await StudentModuleResult.find({ studentId }).sort({ chapterNo: 1 });
 };
 

@@ -41,4 +41,8 @@ const StudentModuleResult = new mongoose.Schema({
     default: 'NOT_ATTEMPTED', // NOT_ATTEMPTED, VIDEO_COMPLETED, FAILED, PASSED
   },
 });
+
+// Ensure a student can only ever have ONE document per chapter
+StudentModuleResult.index({ studentId: 1, chapterNo: 1 }, { unique: true });
+
 module.exports = mongoose.model('StudentModuleResult', StudentModuleResult);
